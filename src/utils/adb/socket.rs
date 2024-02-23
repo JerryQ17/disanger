@@ -4,15 +4,20 @@
 
 use std::ffi::c_uint;
 use std::fmt::Display;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::ops::Index;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::vec;
 
 use crate::utils::adb::error::OptionParseError;
 
 /// The address family of the `adb` command.
 ///
 /// String can be converted into this enum using [`FromStr`] trait.
+///
+/// Note that the domain name (often "localhost") cannot be parsed directly into this enum.
+/// Use [`AdbSocketFamily::from_resolved_str`] to resolve the domain name if needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdbSocketFamily {
     /// A TCP socket. Both Ipv4 and Ipv6 addresses are supported.
@@ -185,6 +190,193 @@ impl AdbSocketFamily {
     pub const VMADDR_CID_HOST: c_uint = 2;
     /// `VMADDR_PORT_ANY` (-1U) means any port number for binding.
     pub const VMADDR_PORT_ANY: c_uint = c_uint::MAX;
+
+    /// Parses a string slice into an `AdbSocketFamily`, resolve the domain name if needed.
+    /// This only affects the [`AdbSocketFamily::Tcp`] variant. When converting to other variants,
+    /// this function behaves the same as [`AdbSocketFamily::from_str`].
+    ///
+    /// The resolution may block the current thread while resolution is performed, which can be
+    /// up to several seconds if the domain name is not resolvable. Prefer using [`str::parse`] or
+    /// [`AdbSocketFamily::from_str`] to avoid this overhead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::{IpAddr, Ipv4Addr};
+    /// use disanger::utils::adb::socket::AdbSocketFamily;
+    ///
+    /// assert_eq!(
+    ///     AdbSocketFamily::from_resolved_str("tcp:localhost:5555"),
+    ///     Ok(AdbSocketFamily::Tcp {
+    ///         host: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+    ///         port: Some(5555)
+    ///     })
+    /// );
+    pub fn from_resolved_str(s: &str) -> Result<Self, OptionParseError> {
+        Self::from_str_helper(s, true)
+    }
+
+    fn resolve(
+        source: &str,
+        mut addrs: vec::IntoIter<SocketAddr>,
+    ) -> Result<SocketAddr, OptionParseError> {
+        addrs
+            .clone()
+            .find(|addr| addr.is_ipv4())
+            .or_else(|| addrs.next())
+            .map_or_else(
+                || {
+                    Err(OptionParseError::with_reason(
+                        source,
+                        stringify!(AdbSocketFamily::Tcp),
+                        "empty iterator from `to_socket_addrs`",
+                    ))
+                },
+                Ok,
+            )
+    }
+
+    fn from_str_helper(s: &str, enable_resolve: bool) -> Result<Self, OptionParseError> {
+        let (family, value) = s.split_once(':').ok_or_else(|| {
+            OptionParseError::with_reason(
+                s.to_string(),
+                stringify!(AdbSocketFamily),
+                "unknown socket specification",
+            )
+        })?;
+        match family {
+            Self::TCP_STR => Self::from_str_tcp_helper(s, value, enable_resolve),
+            Self::LOCAL_ABSTRACT_STR => Self::from_str_str_value_helper(
+                value,
+                stringify!(AdbSocketFamily::LocalAbstract),
+                AdbSocketFamily::LocalAbstract,
+            ),
+            Self::LOCAL_RESERVED_STR => Self::from_str_str_value_helper(
+                value,
+                stringify!(AdbSocketFamily::LocalReserved),
+                AdbSocketFamily::LocalReserved,
+            ),
+            Self::LOCAL_FILE_SYSTEM_STR => Self::from_str_str_value_helper(
+                value,
+                stringify!(AdbSocketFamily::LocalFileSystem),
+                |v| AdbSocketFamily::LocalFileSystem(PathBuf::from(v)),
+            ),
+            Self::DEV_STR => {
+                Self::from_str_str_value_helper(value, stringify!(AdbSocketFamily::Dev), |v| {
+                    AdbSocketFamily::Dev(PathBuf::from(v))
+                })
+            }
+            Self::JDWP_STR => value.parse().map(AdbSocketFamily::Jdwp).map_err(|e| {
+                OptionParseError::with_reason(
+                    s,
+                    stringify!(AdbSocketFamily::Jdwp),
+                    format!("failed to parse `{value}` into unsigned int: {e}"),
+                )
+            }),
+            Self::VSOCK_STR => match value.split_once(':').map(|(c, p)| (c.parse(), p.parse())) {
+                Some((Ok(cid), Ok(port))) => Ok(AdbSocketFamily::Vsock { cid, port }),
+                _ => Err(OptionParseError::with_reason(
+                    s,
+                    stringify!(AdbSocketFamily::Vsock),
+                    format!("failed to parse CID and port from `{value}`"),
+                )),
+            },
+            Self::ACCEPT_FD_STR => value.parse().map(AdbSocketFamily::AcceptFd).map_err(|e| {
+                OptionParseError::with_reason(
+                    s,
+                    stringify!(AdbSocketFamily::AcceptFd),
+                    format!("failed to parse `{value}` into unsigned int: {e}"),
+                )
+            }),
+            _ => Err(OptionParseError::with_reason(
+                s,
+                stringify!(AdbSocketFamily),
+                format!("unknown address family: `{}`", family),
+            )),
+        }
+    }
+
+    fn from_str_tcp_helper(
+        source: &str,
+        value: &str,
+        enable_resolve: bool,
+    ) -> Result<Self, OptionParseError> {
+        if value.is_empty() {
+            return Err(OptionParseError::with_reason(
+                source,
+                stringify!(AdbSocketFamily::Tcp),
+                "empty address",
+            ));
+        }
+        // `tcp:<port>`
+        if let Ok(p) = value.parse::<i128>() {
+            return if p >= 0 && p < u16::MAX as i128 {
+                Ok(Self::Tcp {
+                    host: None,
+                    port: Some(p as u16),
+                })
+            } else {
+                Err(OptionParseError::with_reason(
+                    source,
+                    stringify!(AdbSocketFamily::Tcp),
+                    format!("port number `{value}` is out of range [0, 65535]"),
+                ))
+            };
+        }
+        // `tcp:<ipv4>:<port>` or `tcp:[<ipv6>]:<port>`
+        if let Ok(socket_addr) = value.parse::<SocketAddr>() {
+            return Ok(socket_addr.into());
+        }
+        // `tcp:<ipv4>`
+        if let Ok(ipv4) = value.parse::<Ipv4Addr>() {
+            return Ok(IpAddr::V4(ipv4).into());
+        }
+        // `tcp:[<ipv6>]`
+        if value.starts_with('[') && value.ends_with(']') {
+            return match value.index(1..value.len() - 1).parse::<Ipv6Addr>() {
+                Ok(ipv6) => Ok(IpAddr::V6(ipv6).into()),
+                Err(e) => Err(OptionParseError::with_reason(
+                    source,
+                    stringify!(AdbSocketFamily::Tcp),
+                    format!("failed to parse `{value}` into `Ipv6Addr`: {e}"),
+                )),
+            };
+        }
+        if enable_resolve {
+            // `tcp:<domain name>:<port>`
+            if let Ok(addrs) = value.to_socket_addrs() {
+                return Self::resolve(source, addrs).map(|addr| addr.into());
+            }
+            // `tcp:<domain name>`
+            if let Ok(socket_addrs) = format!("{value}:0").to_socket_addrs() {
+                return Self::resolve(source, socket_addrs).map(|addr| Self::Tcp {
+                    host: Some(addr.ip()),
+                    port: None,
+                });
+            }
+        }
+        Err(OptionParseError::with_reason(
+            source,
+            stringify!(AdbSocketFamily::Tcp),
+            format!("`{value}` is not a valid address or port number"),
+        ))
+    }
+
+    fn from_str_str_value_helper<F: FnOnce(String) -> Self>(
+        value: &str,
+        target: &str,
+        f: F,
+    ) -> Result<Self, OptionParseError> {
+        if value.is_empty() {
+            Err(OptionParseError::with_reason(
+                value,
+                target,
+                "empty socket name",
+            ))
+        } else {
+            Ok(f(value.to_string()))
+        }
+    }
 }
 
 impl From<IpAddr> for AdbSocketFamily {
@@ -209,116 +401,7 @@ impl FromStr for AdbSocketFamily {
     type Err = OptionParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (family, value) = s.split_once(':').ok_or_else(|| {
-            OptionParseError::with_reason(
-                s.to_string(),
-                stringify!(AdbSocketFamily),
-                "unknown socket specification",
-            )
-        })?;
-        match family {
-            Self::TCP_STR => {
-                if let Ok(socket_addr) = value.parse::<SocketAddr>() {
-                    Ok(socket_addr.into())
-                } else if let Ok(port) = value.parse::<u16>() {
-                    Ok(AdbSocketFamily::Tcp {
-                        host: None,
-                        port: Some(port),
-                    })
-                } else if let Ok(ipv4) = value.parse::<Ipv4Addr>() {
-                    Ok(AdbSocketFamily::Tcp {
-                        host: Some(IpAddr::V4(ipv4)),
-                        port: None,
-                    })
-                } else if value.starts_with('[') && value.ends_with(']') {
-                    Ok(AdbSocketFamily::Tcp {
-                        host: Some(IpAddr::V6(value[1..value.len() - 1].parse().map_err(
-                            |e| {
-                                OptionParseError::with_reason(
-                                    s,
-                                    stringify!(AdbSocketFamily::Tcp),
-                                    format!("failed to parse `{value}` into `Ipv6Addr`: {e}"),
-                                )
-                            },
-                        )?)),
-                        port: None,
-                    })
-                } else {
-                    Err(OptionParseError::with_reason(
-                        s.to_string(),
-                        stringify!(AdbSocketFamily::Tcp),
-                        format!("failed to parse `{value}` into `SocketAddr`, `IpAddr` or `u16`"),
-                    ))
-                }
-            }
-            Self::LOCAL_ABSTRACT_STR => {
-                if value.is_empty() {
-                    Err(OptionParseError::with_reason(
-                        s,
-                        stringify!(AdbSocketFamily::LocalAbstract),
-                        "empty socket name",
-                    ))
-                } else {
-                    Ok(AdbSocketFamily::LocalAbstract(value.to_string()))
-                }
-            }
-            Self::LOCAL_RESERVED_STR => {
-                if value.is_empty() {
-                    Err(OptionParseError::with_reason(
-                        s,
-                        stringify!(AdbSocketFamily::LocalReserved),
-                        "empty socket name",
-                    ))
-                } else {
-                    Ok(AdbSocketFamily::LocalReserved(value.to_string()))
-                }
-            }
-            Self::LOCAL_FILE_SYSTEM_STR => {
-                if value.is_empty() {
-                    Err(OptionParseError::with_reason(
-                        s,
-                        stringify!(AdbSocketFamily::LocalFileSystem),
-                        "empty socket name",
-                    ))
-                } else {
-                    Ok(AdbSocketFamily::LocalFileSystem(PathBuf::from(value)))
-                }
-            }
-            Self::DEV_STR => {
-                if value.is_empty() {
-                    Err(OptionParseError::with_reason(
-                        s,
-                        stringify!(AdbSocketFamily::Dev),
-                        "empty character device name",
-                    ))
-                } else {
-                    Ok(AdbSocketFamily::Dev(PathBuf::from(value)))
-                }
-            }
-            Self::JDWP_STR => value.parse().map(AdbSocketFamily::Jdwp).map_err(|e| {
-                OptionParseError::with_reason(
-                    s,
-                    stringify!(AdbSocketFamily::Jdwp),
-                    format!("failed to parse `{value}` into `c_uint`: {e}"),
-                )
-            }),
-            Self::VSOCK_STR => match value.split_once(':').map(|(c, p)| (c.parse(), p.parse())) {
-                Some((Ok(cid), Ok(port))) => Ok(AdbSocketFamily::Vsock { cid, port }),
-                _ => Err(OptionParseError::with_reason(
-                    s,
-                    stringify!(AdbSocketFamily::Vsock),
-                    format!("failed to parse CID and port from `{value}`"),
-                )),
-            },
-            Self::ACCEPT_FD_STR => Ok(AdbSocketFamily::AcceptFd(value.parse::<c_uint>().map_err(
-                |e| OptionParseError::with_reason(s, stringify!(AdbSocketFamily::AcceptFd), e),
-            )?)),
-            _ => Err(OptionParseError::with_reason(
-                s,
-                stringify!(AdbSocketFamily),
-                format!("unknown address family: `{}`", family),
-            )),
-        }
+        AdbSocketFamily::from_str_helper(s, false)
     }
 }
 
@@ -430,83 +513,167 @@ mod tests {
         }
     }
 
+    const TCP_PARSE_OK_NO_RESOLVE: [(&str, AdbSocketFamily); 6] = [
+        (
+            "127.0.0.1:5555",
+            AdbSocketFamily::Tcp {
+                host: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                port: Some(5555),
+            },
+        ),
+        (
+            "[::1]:5555",
+            AdbSocketFamily::Tcp {
+                host: Some(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+                port: Some(5555),
+            },
+        ),
+        (
+            "127.0.0.1",
+            AdbSocketFamily::Tcp {
+                host: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                port: None,
+            },
+        ),
+        (
+            "[::1]",
+            AdbSocketFamily::Tcp {
+                host: Some(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+                port: None,
+            },
+        ),
+        (
+            "5555",
+            AdbSocketFamily::Tcp {
+                host: None,
+                port: Some(5555),
+            },
+        ),
+        (
+            "0",
+            AdbSocketFamily::Tcp {
+                host: None,
+                port: Some(0),
+            },
+        ),
+    ];
+
+    const TCP_PARSE_ERR_NO_RESOLVE: [&str; 28] = [
+        // incomplete address
+        "127.0",
+        "127.0:5555",
+        "[]",
+        "[]:5555",
+        "[:]",
+        "[:5555]",
+        "5555:",
+        // Ipv6 address without square brackets
+        "::",
+        "::1",
+        "::1:5555",
+        "ffff::1:5555",
+        "1111:2222:3333:4444:5555:6666:7777:8888",
+        "1111:2222:3333:4444:5555:6666:7777:8888:5555",
+        // IpAddr out of range
+        "256.0.0.0",
+        "256.-1.0.0",
+        "[gggg::]",
+        "[::gggg]",
+        // port out of range
+        "-1",
+        "65536",
+        // SocketAddr out of range
+        "256.0.0.0:-1",
+        "256.0.0.0:5555",
+        "256.0.0.0:65536",
+        "256.-1.0.0:5555",
+        "[gggg::]:5555",
+        "[::gggg]:5555",
+        // invalid characters
+        "abcd",
+        "a.b.c.d",
+        "a.b.c.d:p",
+    ];
+
+    const TCP_PARSE_OK_RESOLVE: [(&str, AdbSocketFamily); 2] = [
+        (
+            "localhost:5555",
+            AdbSocketFamily::Tcp {
+                host: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                port: Some(5555),
+            },
+        ),
+        (
+            "localhost",
+            AdbSocketFamily::Tcp {
+                host: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                port: None,
+            },
+        ),
+    ];
+
+    const TCP_PARSE_ERR_RESOLVE: [&str; 6] = [
+        "local-host",
+        "local-host:5555",
+        "localhost:",
+        "abcd",
+        "a.b.c.d",
+        "a.b.c.d:p",
+    ];
+
+    #[test]
+    fn test_adb_socket_family_tcp_from_str_helper_disable_resolve() {
+        for (input, expected) in TCP_PARSE_OK_NO_RESOLVE {
+            assert_eq!(
+                AdbSocketFamily::from_str_tcp_helper("", input, false),
+                Ok(expected)
+            );
+        }
+        for input in TCP_PARSE_ERR_NO_RESOLVE {
+            assert!(
+                AdbSocketFamily::from_str_tcp_helper("", input, false).is_err(),
+                "input:`{input}`"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adb_socket_family_tcp_from_str_helper_enable_resolve() {
+        for (input, expected) in TCP_PARSE_OK_RESOLVE {
+            assert_eq!(
+                AdbSocketFamily::from_str_tcp_helper("", input, true),
+                Ok(expected)
+            );
+        }
+        // This loop is time-consuming. Because it tries to resolve the wrong domain name.
+        for input in TCP_PARSE_ERR_RESOLVE {
+            assert!(
+                AdbSocketFamily::from_str_tcp_helper("", input, true).is_err(),
+                "input:`{input}`"
+            );
+        }
+    }
+
     #[test]
     fn test_adb_socket_family_tcp_parse() {
-        let ok = [
-            (
-                "tcp:127.0.0.1:5555",
-                AdbSocketFamily::Tcp {
-                    host: Some(Ipv4Addr::new(127, 0, 0, 1).into()),
-                    port: Some(5555),
-                },
-            ),
-            (
-                "tcp:[::1]:5555",
-                AdbSocketFamily::Tcp {
-                    host: Some(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).into()),
-                    port: Some(5555),
-                },
-            ),
-            (
-                "tcp:127.0.0.1",
-                AdbSocketFamily::Tcp {
-                    host: Some(Ipv4Addr::new(127, 0, 0, 1).into()),
-                    port: None,
-                },
-            ),
-            (
-                "tcp:[::1]",
-                AdbSocketFamily::Tcp {
-                    host: Some(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).into()),
-                    port: None,
-                },
-            ),
-            (
-                "tcp:5555",
-                AdbSocketFamily::Tcp {
-                    host: None,
-                    port: Some(5555),
-                },
-            ),
-            (
-                "tcp:0",
-                AdbSocketFamily::Tcp {
-                    host: None,
-                    port: Some(0),
-                },
-            ),
-        ];
-        for (input, expected) in ok {
+        for (input, expected) in TCP_PARSE_OK_NO_RESOLVE.map(|(i, e)| (format!("tcp:{i}"), e)) {
             assert_eq!(input.parse(), Ok(expected));
         }
-        let err = [
-            // incomplete address
+        for input in TCP_PARSE_ERR_NO_RESOLVE.map(|i| format!("tcp:{i}")) {
+            assert!(input.parse::<AdbSocketFamily>().is_err(), "input:`{input}`");
+        }
+        let extra_err = [
             "tcp",
             "tcp:",
             "5555",
             "127.0.0.1",
             "127.0.0.1:5555",
-            // Ipv6 address without square brackets
-            "tcp:::",
-            "tcp:::1",
-            // IpAddr out of range
-            "tcp:256.0.0.0",
-            "tcp:256.-1.0.0",
-            // port out of range
-            "tcp:-1",
-            "tcp:65536",
-            // SocketAddr out of range
-            "tcp:256.0.0.0:-1",
-            "tcp:256.0.0.0:5555",
-            "tcp:256.0.0.0:65536",
-            "tcp:256.-1.0.0:5555",
-            // invalid address
-            "tcp:abcd",
-            "tcp:a.b.c.d",
-            "tcp:a.b.c.d:p",
+            "[::1]",
+            "[::1]:5555",
+            "::1",
         ];
-        for input in err {
-            assert!(input.parse::<AdbSocketFamily>().is_err());
+        for input in extra_err {
+            assert!(input.parse::<AdbSocketFamily>().is_err(), "input:`{input}`");
         }
     }
 
