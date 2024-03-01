@@ -104,9 +104,9 @@ mod tests {
     use std::fmt::Debug;
 
     pub fn test_env_var_helper<Var>(valid: &[Var::Value], invalid: &[Var::Value], clear: Var::Value)
-        where
-            Var: AdbEnvVar + Debug,
-            Var::Value: PartialEq + Debug + Clone,
+    where
+        Var: AdbEnvVar + Debug,
+        Var::Value: PartialEq + Debug + Clone,
     {
         // 1. Test if the environment variable is removed.
         Var::remove();
