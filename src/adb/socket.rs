@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::vec;
 
-use crate::utils::adb::error::OptionParseError;
+use crate::adb::error::OptionParseError;
 
 /// The address family of the `adb` command.
 ///
@@ -30,7 +30,7 @@ pub enum AdbSocketFamily {
     /// `tcp:[host:[port]]`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::Tcp;
+    /// use disanger::adb::socket::AdbSocketFamily::Tcp;
     ///
     /// assert_eq!(
     ///     Tcp { host: Some("127.0.0.1".parse().unwrap()), port: Some(5555) }.to_string(),
@@ -61,7 +61,7 @@ pub enum AdbSocketFamily {
     /// To avoid this issue, Ipv6 address without square brackets is simply not accepted.
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily;
+    /// use disanger::adb::socket::AdbSocketFamily;
     ///
     /// let wrong_addr = "tcp:::1:5555";  // "[::1]:5555" or "[::1:5555]:None"?
     /// assert!(wrong_addr.parse::<AdbSocketFamily>().is_err());
@@ -77,7 +77,7 @@ pub enum AdbSocketFamily {
     /// `localabstract:<unix domain socket name>`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::LocalAbstract;
+    /// use disanger::adb::socket::AdbSocketFamily::LocalAbstract;
     ///
     /// assert_eq!(
     ///     LocalAbstract("an_abstract_socket".to_string()).to_string(),
@@ -92,7 +92,7 @@ pub enum AdbSocketFamily {
     ///`localreserved:<unix domain socket name>`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::LocalReserved;
+    /// use disanger::adb::socket::AdbSocketFamily::LocalReserved;
     ///
     /// assert_eq!(
     ///     LocalReserved("a_reserved_socket".to_string()).to_string(),
@@ -107,7 +107,7 @@ pub enum AdbSocketFamily {
     /// `localfilesystem:<unix domain socket name>`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::LocalFileSystem;
+    /// use disanger::adb::socket::AdbSocketFamily::LocalFileSystem;
     ///
     /// assert_eq!(
     ///     LocalFileSystem("/path/to/local_file_system_socket".into()).to_string(),
@@ -122,7 +122,7 @@ pub enum AdbSocketFamily {
     /// `dev:<character device name>`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::Dev;
+    /// use disanger::adb::socket::AdbSocketFamily::Dev;
     ///
     /// assert_eq!(
     ///     Dev("/path/to/dev_socket".into()).to_string(),
@@ -137,7 +137,7 @@ pub enum AdbSocketFamily {
     /// `jdwp:<process pid>`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::Jdwp;
+    /// use disanger::adb::socket::AdbSocketFamily::Jdwp;
     ///
     /// assert_eq!(Jdwp(1234).to_string(), "jdwp:1234");
     /// ```
@@ -149,7 +149,7 @@ pub enum AdbSocketFamily {
     /// `vsock:<CID>:<port>`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::Vsock;
+    /// use disanger::adb::socket::AdbSocketFamily::Vsock;
     ///
     /// assert_eq!(Vsock { cid: 1, port: 2 }.to_string(), "vsock:1:2");
     Vsock { cid: c_uint, port: c_uint },
@@ -160,7 +160,7 @@ pub enum AdbSocketFamily {
     /// `acceptfd:<fd>`
     ///
     /// ```
-    /// use disanger::utils::adb::socket::AdbSocketFamily::AcceptFd;
+    /// use disanger::adb::socket::AdbSocketFamily::AcceptFd;
     ///
     /// assert_eq!(AcceptFd(3).to_string(), "acceptfd:3");
     AcceptFd(c_uint),
@@ -191,7 +191,7 @@ impl AdbSocketFamily {
     /// `VMADDR_PORT_ANY` (-1U) means any port number for binding.
     pub const VMADDR_PORT_ANY: c_uint = c_uint::MAX;
 
-    /// Parses a string slice into an `AdbSocketFamily`, resolve the domain name if needed.
+    /// Parse a string slice into an [`AdbSocketFamily`], resolve the domain name if needed.
     /// This only affects the [`AdbSocketFamily::Tcp`] variant. When converting to other variants,
     /// this function behaves the same as [`AdbSocketFamily::from_str`].
     ///
@@ -203,7 +203,7 @@ impl AdbSocketFamily {
     ///
     /// ```
     /// use std::net::{IpAddr, Ipv4Addr};
-    /// use disanger::utils::adb::socket::AdbSocketFamily;
+    /// use disanger::adb::socket::AdbSocketFamily;
     ///
     /// assert_eq!(
     ///     AdbSocketFamily::from_resolved_str("tcp:localhost:5555"),

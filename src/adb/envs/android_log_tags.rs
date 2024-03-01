@@ -77,7 +77,7 @@ impl FromStr for Priority {
 /// `<tag>:<priority>`
 ///
 /// ```
-/// use disanger::utils::adb::envs::{FilterSpec, Priority};
+/// use disanger::adb::envs::{FilterSpec, Priority};
 ///
 /// assert_eq!(FilterSpec::default().to_string(), "*:V");
 /// assert_eq!(
@@ -164,7 +164,7 @@ impl AdbEnvVar for AndroidLogTags {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::adb::envs::tests::test_env_var_helper;
+    use crate::adb::envs::tests::test_env_var_helper;
 
     #[test]
     fn test_filter_spec() {
