@@ -116,7 +116,7 @@ impl Display for AdbTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::adb::envs::tests::test_env_var_helper;
+    use crate::adb::envs::tests::test_env_var_helper;
 
     #[test]
     fn test_adb_trace() {
