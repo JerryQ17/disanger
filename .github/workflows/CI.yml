@@ -1,0 +1,40 @@
+name: Test
+
+on:
+  pull_request:
+    branches:
+      - '*'
+  push:
+    branches:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  CI:
+    name: CI
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+
+      - name: Check fmt
+        run: cargo fmt --all -- --check
+
+      - name: Check clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Run tests
+        run: cargo test
