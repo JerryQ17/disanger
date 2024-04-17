@@ -1,8 +1,9 @@
+use macro_core::add_default_field_name;
 use proc_macro2::{Ident, TokenStream};
 use proc_macro_error::abort;
 use quote::{format_ident, quote, ToTokens};
 use syn::punctuated::Punctuated;
-use syn::{parse_quote, Field, Fields, FieldsNamed, FieldsUnnamed, ItemStruct, Token};
+use syn::{parse_quote, Field, Fields, FieldsNamed, ItemStruct, Token};
 
 pub fn impl_attributed_field(mut input: ItemStruct) -> TokenStream {
     let ident = &input.ident;
@@ -14,17 +15,10 @@ pub fn impl_attributed_field(mut input: ItemStruct) -> TokenStream {
             }),
             ..input
         }),
-        Fields::Unnamed(FieldsUnnamed { unnamed, .. }) => {
-            let mut named = unnamed.clone();
-            named.iter_mut().enumerate().for_each(|(i, f)| {
-                f.ident = Some(format_ident!("field{}", i));
-            });
+        Fields::Unnamed(unnamed) => {
             let output = ItemStruct {
                 ident: ident.clone(),
-                fields: Fields::Named(FieldsNamed {
-                    named,
-                    brace_token: Default::default(),
-                }),
+                fields: add_default_field_name(unnamed),
                 ..input
             };
             abort!(
@@ -34,7 +28,7 @@ pub fn impl_attributed_field(mut input: ItemStruct) -> TokenStream {
                 help = "add names to the fields:\n{}", output.to_token_stream();
             );
         }
-        Fields::Named(FieldsNamed { ref mut named, .. }) => {
+        Fields::Named(FieldsNamed { named, .. }) => {
             let from_field = impl_from_field(ident, named);
             named.push(parse_quote!(__original: syn::Field));
             let extra_getters = impl_extra_getters(named);
