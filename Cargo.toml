@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/lib/adb"]
+members = ["crates/lib/*", "crates/macro/*"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
