@@ -1,4 +1,4 @@
-use macro_core::add_default_field_name;
+use macro_core::{add_default_field_name, pretty_named_struct};
 use proc_macro2::{Ident, TokenStream};
 use proc_macro_error::abort;
 use quote::{format_ident, quote, ToTokens};
@@ -20,12 +20,13 @@ pub fn impl_attributed_field(mut input: ItemStruct) -> TokenStream {
                 ident: ident.clone(),
                 fields: add_default_field_name(unnamed),
                 ..input
-            };
+            }
+            .into_token_stream();
             abort!(
                 unnamed,
                 "struct `{}` has unnamed fields `{}`", ident, unnamed.to_token_stream();
                 note = "attributed_field can only be applied to structs with named fields";
-                help = "add names to the fields:\n{}", output.to_token_stream();
+                help = "add names to the fields:\n{}", pretty_named_struct(output);
             );
         }
         Fields::Named(FieldsNamed { named, .. }) => {
