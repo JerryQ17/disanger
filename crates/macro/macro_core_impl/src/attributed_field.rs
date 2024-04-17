@@ -45,29 +45,33 @@ pub fn impl_attributed_field(mut input: ItemStruct) -> TokenStream {
 
 fn impl_extra_getters(fields: &Punctuated<Field, Token![,]>) -> TokenStream {
     let extra_fields = [
-        (quote! { vis }, quote! { syn::Visibility }, quote! { vis }),
+        (
+            quote! { vis },
+            quote! { &syn::Visibility },
+            quote! { &self.__original.vis },
+        ),
         (
             quote! { mutability },
-            quote! { syn::FieldMutability },
-            quote! { mutability },
+            quote! { &syn::FieldMutability },
+            quote! { &self.__original.mutability },
         ),
         (
             quote! { ident },
-            quote! { syn::Ident },
-            quote! { ident.as_ref().unwrap() },
+            quote! { Option<&syn::Ident> },
+            quote! { self.__original.ident.as_ref() },
         ),
-        (quote! { ty }, quote! { syn::Type }, quote! { ty }),
+        (
+            quote! { ty },
+            quote! { &syn::Type },
+            quote! { &self.__original.ty },
+        ),
     ];
-    let getters = extra_fields.into_iter().map(|(mut ident, ty, v)| {
+    let getters = extra_fields.into_iter().map(|(mut ident, ty, getter)| {
         fields
             .iter()
             .any(|field| *field.ident.as_ref().unwrap() == ident.to_string())
             .then(|| ident = format_ident!("__{ident}").to_token_stream());
-        quote! {
-            pub fn #ident(&self) -> &#ty {
-                &self.__original.#v
-            }
-        }
+        quote! { pub fn #ident(&self) -> #ty { #getter } }
     });
     quote! { #(#getters)* }
 }
