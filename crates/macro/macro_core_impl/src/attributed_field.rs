@@ -73,6 +73,15 @@ fn impl_extra_getters(fields: &Punctuated<Field, Token![,]>) -> TokenStream {
 }
 
 fn impl_from_field(name: &Ident, fields: &Punctuated<Field, Token![,]>) -> TokenStream {
+    if fields.is_empty() {
+        return quote! {
+            impl From<syn::Field> for #name {
+                fn from(field: syn::Field) -> Self {
+                    Self { __original: field }
+                }
+            }
+        };
+    }
     let mut decl = vec![];
     let mut arms = vec![];
     let mut assign = vec![];
