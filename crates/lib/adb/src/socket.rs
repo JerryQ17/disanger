@@ -52,7 +52,7 @@ pub enum AdbSocketFamilies {
 /// ```
 /// # use adb::socket::Tcp;
 /// assert!("tcp:".parse::<Tcp>().is_err());
-/// assert_eq!(Tcp { ip: None, port: None }.to_string(), "tcp:");
+/// assert_eq!(Tcp { ip: None, port: None }.to_string(), "");
 /// ```
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct Tcp {
